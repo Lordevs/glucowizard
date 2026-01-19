@@ -10,15 +10,16 @@ from rest_framework import status as http_status
 from django.utils import timezone
 from datetime import timedelta
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 from glucowizard.supabase_client import get_supabase
 from .models import Report, AdminPrompt
 from .serializers import (
-    ReportCreateSerializer,
     ReportDetailSerializer,
     ReportListSerializer,
 )
 from .openai_client import get_client
 from .pagination import StandardResultsSetPagination
+from payments.models import Subscription, UserCredit
 
 
 @api_view(["GET"])
@@ -146,6 +147,27 @@ def create_report(request):
             {"error": f"Server configuration error: Missing {', '.join(missing)}"},
             status=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+    # 1.5. Payment Validation
+    user = request.user
+    has_active_subscription = Subscription.objects.filter(
+        user=user, status__in=["active", "trialing"]
+    ).exists()
+
+    if not has_active_subscription:
+        with transaction.atomic():
+            credits = UserCredit.objects.filter(user=user).select_for_update().first()
+            if not credits or credits.balance <= 0:
+                return Response(
+                    {
+                        "error": "Payment required. You need an active subscription or credits to generate a report.",
+                        "code": "payment_required",
+                    },
+                    status=http_status.HTTP_402_PAYMENT_REQUIRED,
+                )
+            # Use one credit for pay-as-you-go
+            credits.balance -= 1
+            credits.save()
 
     # 2. Parse diabetic_values
     diabetic_values = request.data.get("diabetic_values")

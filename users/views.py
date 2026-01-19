@@ -7,8 +7,22 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from django.contrib.auth import get_user_model
 from glucowizard.supabase_client import get_supabase
 from .serializers import RegisterSerializer
+from payments.models import Subscription, UserCredit
 
 User = get_user_model()
+
+
+def get_user_subscription_info(user):
+    """Helper to get subscription and credit info for a user."""
+    sub = Subscription.objects.filter(user=user).first()
+    credits = UserCredit.objects.filter(user=user).first()
+
+    return {
+        "is_subscribed": sub.status in ["active", "trialing"] if sub else False,
+        "plan_type": sub.plan_type if sub else None,
+        "subscription_status": sub.status if sub else None,
+        "credits": credits.balance if credits else 0,
+    }
 
 
 @api_view(["GET"])
@@ -18,14 +32,14 @@ def me(request):
     Returns the authenticated user's information.
     """
     user = request.user
-    return Response(
-        {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "avatar_url": user.avatar_url,
-        }
-    )
+    data = {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "avatar_url": user.avatar_url,
+    }
+    data.update(get_user_subscription_info(user))
+    return Response(data)
 
 
 @api_view(["POST"])
@@ -85,6 +99,7 @@ def login(request):
                     "username": user.username,
                     "email": user.email,
                     "avatar_url": user.avatar_url,
+                    **get_user_subscription_info(user),
                 },
                 "session": {
                     "access_token": response.session.access_token,
