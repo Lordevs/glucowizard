@@ -7,6 +7,7 @@ from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
 from .models import Subscription, UserCredit
 from django.contrib.auth import get_user_model
+from django.conf import settings
 
 User = get_user_model()
 
@@ -72,9 +73,8 @@ def create_checkout_session(request):
 
     user = request.user
 
-    # Define success/cancel URLs based on environment
-    is_prod = os.getenv("DJANGO_DEBUG", "True").lower() == "false"
-    base_url = "https://glucowizard.com" if is_prod else "http://localhost:3000"
+    # Use FRONTEND_URL from settings
+    base_url = settings.FRONTEND_URL
 
     try:
         # 1. Fetch the price and expand the product to get its metadata
@@ -93,16 +93,29 @@ def create_checkout_session(request):
             )
             user.stripe_customer_id = customer.id
             user.save()
+        else:
+            # Optionally ensure customer metadata is up to date
+            stripe.Customer.modify(
+                user.stripe_customer_id, metadata={"user_id": user.id}
+            )
 
         # 3. Create Checkout Session
-        checkout_session = stripe.checkout.Session.create(
-            customer=user.stripe_customer_id,
-            line_items=[{"price": price_id, "quantity": 1}],
-            mode=mode,
-            success_url=f"{base_url}/dashboard/success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{base_url}/pricing",
-            metadata={"user_id": user.id, "plan_type": plan_type},
-        )
+        session_args = {
+            "customer": user.stripe_customer_id,
+            "line_items": [{"price": price_id, "quantity": 1}],
+            "mode": mode,
+            "success_url": f"{base_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+            "cancel_url": f"{base_url}/payment/error",
+            "metadata": {"user_id": user.id, "plan_type": plan_type},
+        }
+
+        # For subscriptions, we also pass metadata to the subscription object itself
+        if mode == "subscription":
+            session_args["subscription_data"] = {
+                "metadata": {"user_id": user.id, "plan_type": plan_type}
+            }
+
+        checkout_session = stripe.checkout.Session.create(**session_args)
 
         return Response({"url": checkout_session.url})
     except Exception as e:
@@ -202,6 +215,7 @@ def stripe_webhook(request):
         session = event["data"]["object"]
         handle_checkout_completed(session)
     elif event["type"] in [
+        "customer.subscription.created",
         "customer.subscription.updated",
         "customer.subscription.deleted",
     ]:
@@ -238,35 +252,82 @@ def handle_checkout_completed(session):
 
 def handle_subscription_sync(stripe_sub):
     customer_id = stripe_sub.customer
-    try:
-        user = User.objects.get(stripe_customer_id=customer_id)
-    except User.DoesNotExist:
+    user = None
+
+    # 1. Try finding by stripe_customer_id
+    user = User.objects.filter(stripe_customer_id=customer_id).first()
+
+    # 2. Fallback: Search Customer metadata or email if ID link is missing
+    if not user:
+        print(f"User not found by ID {customer_id}. Trying Customer metadata...")
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+            user_id = customer.metadata.get("user_id")
+            if user_id:
+                user = User.objects.filter(id=user_id).first()
+
+            if not user:
+                user = User.objects.filter(email=customer.email).first()
+
+            if user:
+                # Link them permanently now
+                user.stripe_customer_id = customer_id
+                user.save()
+        except Exception as e:
+            print(f"Fallback lookup failed: {str(e)}")
+
+    if not user:
+        print(
+            f"Webhook Error: Could not associate Customer {customer_id} with any local user."
+        )
         return
 
     from django.utils import timezone
     from datetime import datetime
 
-    # Convert timestamp to aware datetime
-    period_end = datetime.fromtimestamp(stripe_sub.current_period_end, tz=timezone.utc)
+    # Safe access to current_period_end with fallback
+    raw_period_end = getattr(stripe_sub, "current_period_end", None)
+    if raw_period_end:
+        period_end = datetime.fromtimestamp(raw_period_end, tz=timezone.utc)
+    else:
+        period_end = timezone.now()
 
     # Get plan_type from product metadata (primary) or price metadata
-    price_id = stripe_sub["items"]["data"][0]["price"]["id"]
-    price = stripe.Price.retrieve(price_id, expand=["product"])
-    plan_type = (
-        price.product.metadata.get("plan_type")
-        or price.metadata.get("plan_type")
-        or "monthly"
-    )
+    try:
+        # Safely get items using .get() to avoid clashing with dict.items() method
+        items = stripe_sub.get("items")
+        if not items:
+            print("No items found in subscription event.")
+            return
 
-    Subscription.objects.update_or_create(
-        user=user,
-        defaults={
-            "stripe_subscription_id": stripe_sub.id,
-            "stripe_price_id": price_id,
-            "plan_type": plan_type,
-            "status": stripe_sub.status,
-            "current_period_end": period_end,
-            "cancel_at_period_end": stripe_sub.cancel_at_period_end,
-        },
-    )
-    print(f"Synced subscription for User {user.id}. Status: {stripe_sub.status}")
+        data = items.get("data", [])
+        if not data:
+            print("Items data list is empty.")
+            return
+
+        price_id = data[0]["price"]["id"]
+        price = stripe.Price.retrieve(price_id, expand=["product"])
+        plan_type = (
+            price.product.metadata.get("plan_type")
+            or price.metadata.get("plan_type")
+            or "monthly"
+        )
+
+        Subscription.objects.update_or_create(
+            user=user,
+            defaults={
+                "stripe_subscription_id": stripe_sub.id,
+                "stripe_price_id": price_id,
+                "plan_type": plan_type,
+                "status": getattr(stripe_sub, "status", "active"),
+                "current_period_end": period_end,
+                "cancel_at_period_end": getattr(
+                    stripe_sub, "cancel_at_period_end", False
+                ),
+            },
+        )
+        print(
+            f"Synced subscription for User {user.id} ({user.email}). Status: {getattr(stripe_sub, 'status', 'unknown')}, Plan: {plan_type}"
+        )
+    except Exception as e:
+        print(f"Error updating subscription record: {str(e)}")

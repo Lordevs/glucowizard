@@ -21,6 +21,8 @@ def get_user_subscription_info(user):
         "is_subscribed": sub.status in ["active", "trialing"] if sub else False,
         "plan_type": sub.plan_type if sub else None,
         "subscription_status": sub.status if sub else None,
+        "cancel_at_period_end": sub.cancel_at_period_end if sub else False,
+        "current_period_end": sub.current_period_end if sub else None,
         "credits": credits.balance if credits else 0,
     }
 
