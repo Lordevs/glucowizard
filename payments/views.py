@@ -190,6 +190,38 @@ def cancel_subscription(request):
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def reactivate_subscription(request):
+    """
+    Undoes a pending cancellation, setting the subscription to renew at the end of the period.
+    """
+    try:
+        user = request.user
+        subscription = Subscription.objects.filter(
+            user=user, status__in=["active", "trialing"], cancel_at_period_end=True
+        ).first()
+
+        if not subscription:
+            return Response(
+                {"error": "No pending cancellation found for an active subscription."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Reactivate in Stripe
+        stripe.Subscription.modify(
+            subscription.stripe_subscription_id, cancel_at_period_end=False
+        )
+
+        # Update local state
+        subscription.cancel_at_period_end = False
+        subscription.save()
+
+        return Response({"message": "Subscription has been successfully reactivated."})
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @csrf_exempt
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -282,15 +314,38 @@ def handle_subscription_sync(stripe_sub):
         )
         return
 
-    from django.utils import timezone
-    from datetime import datetime
+    import datetime
+    from django.utils import timezone as django_timezone
 
-    # Safe access to current_period_end with fallback
-    raw_period_end = getattr(stripe_sub, "current_period_end", None)
+    # 1. Try to get period end from event object
+    raw_period_end = stripe_sub.get("current_period_end")
+
+    # 2. Fallback: If missing, check nested items (newer API)
+    if not raw_period_end:
+        items = stripe_sub.get("items", {}).get("data", [])
+        if items:
+            raw_period_end = items[0].get("current_period_end")
+
+    # 3. Ultimate Fallback: Retrieve full object from Stripe if data is missing
+    # This prevents the "renewal date is today" bug.
+    if not raw_period_end:
+        try:
+            full_sub = stripe.Subscription.retrieve(stripe_sub.id)
+            raw_period_end = full_sub.get("current_period_end")
+            print(
+                f"Retrieved full subscription from Stripe. Period end: {raw_period_end}"
+            )
+        except Exception as e:
+            print(f"Failed to retrieve full subscription: {str(e)}")
+
     if raw_period_end:
-        period_end = datetime.fromtimestamp(raw_period_end, tz=timezone.utc)
+        period_end = datetime.datetime.fromtimestamp(
+            raw_period_end, tz=datetime.timezone.utc
+        )
+        print(f"Subscription period end: {period_end}")
     else:
-        period_end = timezone.now()
+        period_end = django_timezone.now()
+        print("Warning: Could not determine period end. Falling back to today.")
 
     # Get plan_type from product metadata (primary) or price metadata
     try:

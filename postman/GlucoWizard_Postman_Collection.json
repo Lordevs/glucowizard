@@ -628,6 +628,35 @@
 					"response": []
 				},
 				{
+					"name": "Reactivate Subscription",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{accessToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/payments/reactivate-subscription/",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"payments",
+								"reactivate-subscription",
+								""
+							]
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Stripe Webhook",
 					"request": {
 						"method": "POST",

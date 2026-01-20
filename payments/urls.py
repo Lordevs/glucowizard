@@ -5,6 +5,7 @@ from .views import (
     stripe_webhook,
     get_session_status,
     cancel_subscription,
+    reactivate_subscription,
 )
 
 urlpatterns = [
@@ -16,5 +17,10 @@ urlpatterns = [
     ),
     path("session-status/", get_session_status, name="session-status"),
     path("cancel-subscription/", cancel_subscription, name="cancel-subscription"),
+    path(
+        "reactivate-subscription/",
+        reactivate_subscription,
+        name="reactivate-subscription",
+    ),
     path("webhook/", stripe_webhook, name="stripe-webhook"),
 ]

@@ -22,7 +22,12 @@ def get_user_subscription_info(user):
         "plan_type": sub.plan_type if sub else None,
         "subscription_status": sub.status if sub else None,
         "cancel_at_period_end": sub.cancel_at_period_end if sub else False,
-        "current_period_end": sub.current_period_end if sub else None,
+        "renewal_date": sub.current_period_end
+        if sub and not sub.cancel_at_period_end
+        else None,
+        "expiry_date": sub.current_period_end
+        if sub and sub.cancel_at_period_end
+        else None,
         "credits": credits.balance if credits else 0,
     }
 
