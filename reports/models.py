@@ -27,6 +27,7 @@ class Report(models.Model):
         max_length=32, default="created"
     )  # created|processing|done|error
     error_message = models.TextField(blank=True, default="")
+    clinician_consent = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -452,6 +452,12 @@
 									"type": "text"
 								},
 								{
+									"key": "clinician_consent",
+									"value": "true",
+									"type": "text",
+									"description": "Whether the user wants suggestions for their clinician (true/false)"
+								},
+								{
 									"key": "pdf_file",
 									"type": "file",
 									"src": []

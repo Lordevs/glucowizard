@@ -214,10 +214,15 @@ def create_report(request):
             )
 
     # 4. Create database record
+    clinician_consent = request.data.get("clinician_consent", False)
+    if isinstance(clinician_consent, str):
+        clinician_consent = clinician_consent.lower() == "true"
+
     report = Report.objects.create(
         user=request.user,
         diabetic_values=diabetic_values,
         pdf_file=pdf_path,
+        clinician_consent=clinician_consent,
         status="processing",
     )
 
@@ -227,22 +232,37 @@ def create_report(request):
 
         # Build Prompts
         system_prompt = (
-            "Analyze the following diabetes management data.\n\n"
+            "Analyze the following diabetes management data and provide a comprehensive report in Markdown format.\n\n"
             "### Inputs Provided\n"
             "- CGM report (time-series and summary statistics)\n"
             "- Current insulin dosing parameters\n\n"
             "### Tasks\n"
-            "1. Analyze CGM trends and glucose control patterns\n"
-            "2. Identify hyperglycemia, hypoglycemia, and variability issues\n"
-            "3. Provide clinically reasonable suggested adjustments for:\n"
-            "   - Bolus insulin ratio (insulin-to-carb)\n"
-            "   - Basal insulin rate\n"
-            "   - Correction factor (insulin sensitivity)\n\n"
+            "1. **Summary**: Provide key insights from the glucose data (Average Glucose, GMI, CV, Time in Range).\n"
+            "2. **Analysis**: Identify trends, hyperglycemia, hypoglycemia, and variability issues.\n"
+            "3. **Recommendations**: Provide clinically reasonable suggested adjustments for Bolus Ratio, Basal Rate, and Correction Factor.\n\n"
             "### Rules\n"
-            "- Suggestions must be conservative and expressed as ranges or directional changes\n"
-            "- Do NOT present recommendations as final prescriptions\n"
-            "- Clearly note when trends are uncertain or data is insufficient\n\n"
-            "Also return a JSON object with fields: summary, analysis[], recommendations[] and suggested_insulin_parameters of basal_ratio, bolus_ratio and correction_factor.\n\n"
+            "- **STRICTLY NO JSON**: Do not include any JSON code blocks (e.g., ```json ... ```) or raw JSON strings in your response. All information must be presented as Markdown text, headings, lists, or tables.\n"
+            "- **NO MARKDOWN CODE WRAPPERS**: Do not wrap your entire response in triple backticks (e.g., ```markdown ... ```). Provide the raw Markdown text directly.\n"
+            "- **Conservative Suggestions**: Suggestions must be conservative, expressed as ranges or directional changes, and clearly noted as non-prescriptive.\n"
+            "- **Data Uncertainty**: Clearly note when trends are uncertain or data is insufficient.\n\n"
+        )
+
+        if report.clinician_consent:
+            system_prompt += (
+                "### Clinician Suggestions Table\n"
+                "The user HAS requested suggestions to share with their healthcare professional.\n"
+                "For EACH time slot/period mentioned in the user's current insulin parameters (e.g., Morning, Afternoon, Nighttime or specific time ranges), "
+                "create a Markdown table detailing suggested adjustments for Bolus Ratio, Correction Factor, and Basal Rates.\n\n"
+                "Table Columns: | Time Period / Slot | Parameter | Current Value | Suggested Adjustment | Rationale |\n"
+                "| --- | --- | --- | --- | --- |\n\n"
+            )
+        else:
+            system_prompt += (
+                "### Recommendations\n"
+                "Provide the suggested adjustments for insulin parameters in a clear, bulleted or numbered list format.\n\n"
+            )
+
+        system_prompt += (
             "### Current Insulin Parameters (JSON)\n"
             f"{json.dumps(report.diabetic_values)}"
         )
